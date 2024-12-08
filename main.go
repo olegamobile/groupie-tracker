@@ -143,6 +143,9 @@ func getLocation(rawLocation string) (string, string) {
 	elements := strings.Split(rawLocation, "-")
 
 	for i, element := range elements {
+		if i > 1 {
+			break
+		}
 		parts := strings.Split(element, "_")
 		if element == "usa" || element == "uk" {
 			result[i] = strings.ToUpper(element)
