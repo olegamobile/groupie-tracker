@@ -6,7 +6,8 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"strconv"
+	"strings"
+	"time"
 )
 
 // using struct tags because we should create exportable var names (starting from capital letters) to use them in templates
@@ -24,119 +25,257 @@ type Relation struct {
 	DatesLocations map[string][]string `json:"datesLocations"`
 }
 
-// getting data from the given API
-func FetchGroups() ([]Group, error) {
-	endpointURL := "https://groupietrackers.herokuapp.com/api/artists"
+type Location struct {
+	ID        int      `json:"id"`
+	Locations []string `json:"locations"`
+	Dates     string   `json:"dates"`
+}
+
+type Dates struct {
+	ID    int      `json:"id"`
+	Dates []string `json:"dates"`
+}
+
+type Details struct {
+	Artist       Group
+	Relation     Relation
+	Locations    string
+	FirstConcert string
+	LastConcert  string
+}
+
+const (
+	ArtistURL   = "https://groupietrackers.herokuapp.com/api/artists"
+	LocationURL = "https://groupietrackers.herokuapp.com/api/locations"
+	DateURL     = "https://groupietrackers.herokuapp.com/api/dates"
+	RelationURL = "https://groupietrackers.herokuapp.com/api/relation"
+)
+
+func fetchData(endpointURL, id string) (*http.Response, error) {
+	if id != "" {
+		endpointURL += "/" + id
+	}
 	resp, err := http.Get(endpointURL)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func FetchGroups() ([]Group, error) {
+	resp, err := fetchData(ArtistURL, "")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var groups []Group
+
 	// decoding JSON data into "groups" using pointer to it
-	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&groups); err != nil {
 		return nil, err
 	}
+
 	return groups, nil
 }
 
-func fetchGroup(id int) (Group, error) {
-	endpointURL := fmt.Sprintf("https://groupietrackers.herokuapp.com/api/artists/%d", id)
-	resp, err := http.Get(endpointURL)
+func FetchGroup(id string) (Group, error) {
+	resp, err := fetchData(ArtistURL, id)
 	if err != nil {
 		return Group{}, err
 	}
 	defer resp.Body.Close()
 
 	var group Group
-	if err := json.NewDecoder(resp.Body).Decode(&group); err != nil {
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&group); err != nil {
 		return Group{}, err
 	}
+
 	return group, nil
 }
 
-func fetchRelation(id int) (Relation, error) {
-	endpointURL := fmt.Sprintf("https://groupietrackers.herokuapp.com/api/relation/%d", id)
-	resp, err := http.Get(endpointURL)
+func fetchRelation(id string) (Relation, error) {
+	resp, err := fetchData(RelationURL, id)
 	if err != nil {
 		return Relation{}, err
 	}
 	defer resp.Body.Close()
 
 	var relation Relation
-	if err := json.NewDecoder(resp.Body).Decode(&relation); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&relation); err != nil {
 		return Relation{}, err
 	}
+
 	return relation, nil
+}
+
+func fetchLocations(id string) (string, error) {
+	resp, err := fetchData(LocationURL, id)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var locations Location
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&locations); err != nil {
+		return "", err
+	}
+
+	var countriesList []string
+	countriesMap := make(map[string]bool)
+	for _, location := range locations.Locations {
+		_, country := getLocation(location)
+		if !countriesMap[country] {
+			countriesList = append(countriesList, country)
+			countriesMap[country] = true
+		}
+	}
+	return strings.Join(countriesList, ", "), nil
+}
+
+func getLocation(rawLocation string) (string, string) {
+	var result [2]string
+	elements := strings.Split(rawLocation, "-")
+
+	for i, element := range elements {
+		parts := strings.Split(element, "_")
+		if element == "usa" || element == "uk" {
+			result[i] = strings.ToUpper(element)
+			continue
+		}
+		var tempResult []string
+		for _, part := range parts {
+			tempResult = append(tempResult, strings.ToUpper(string(part[0]))+part[1:])
+		}
+		result[i] = strings.Join(tempResult, " ")
+	}
+	return result[0], result[1]
+}
+
+func fetchDates(id string) ([]string, error) {
+	resp, err := fetchData(DateURL, id)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var dates Dates
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&dates); err != nil {
+		return nil, err
+	}
+	result := []string{}
+	for _, element := range dates.Dates {
+		result = append(result, strings.ReplaceAll(element, "*", ""))
+	}
+	return result, nil
+}
+
+func getFirstLastDate(dates []string) (string, string, error) {
+	inputFormat := "02-01-2006"
+	outputFormat := "02 January 2006"
+	if len(dates) == 0 {
+		return "", "", fmt.Errorf("empty slice of dates")
+	}
+	minDate, err := time.Parse(inputFormat, dates[0])
+	if err != nil {
+		return "", "", fmt.Errorf("error parsing date %q: %v", dates[0], err)
+	}
+	maxDate := minDate
+	for _, dateStr := range dates[1:] {
+		parsedDate, err := time.Parse(inputFormat, dateStr)
+		if err != nil {
+			return "", "", fmt.Errorf("error parsing date %q: %v", dateStr, err)
+		}
+		if parsedDate.Before(minDate) {
+			minDate = parsedDate
+		}
+		if parsedDate.After(maxDate) {
+			maxDate = parsedDate
+		}
+	}
+	return minDate.Format(outputFormat), maxDate.Format(outputFormat), nil
+}
+
+func generateMainPage(w http.ResponseWriter) {
+	groups, err := FetchGroups()
+	if err != nil {
+		http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
+		log.Println("Error fetching data from API:", err)
+		return
+	}
+
+	tmpl, err := template.ParseFiles("templates/index.html")
+
+	if err != nil {
+		http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
+		log.Println("Error parsing template:", err)
+		return
+	}
+	tmpl.Execute(w, groups)
+}
+
+func generateDetailsPage(w http.ResponseWriter, id string) {
+	group, err := FetchGroup(id)
+	if err != nil {
+		http.Error(w, "Error fetching group data", http.StatusInternalServerError)
+		return
+	}
+
+	relation, err := fetchRelation(id)
+	if err != nil {
+		http.Error(w, "Error fetching relation data", http.StatusInternalServerError)
+		return
+	}
+
+	countriesList, err := fetchLocations(id)
+	if err != nil {
+		http.Error(w, "Error fetching locations data", http.StatusInternalServerError)
+		return
+	}
+
+	tmpl, err := template.ParseFiles("templates/details.html")
+	if err != nil {
+		http.Error(w, "Error loading template", http.StatusInternalServerError)
+		return
+	}
+
+	dates, _ := fetchDates(id)
+	var details Details
+	details.Artist = group
+	details.Relation = relation
+	details.Locations = countriesList
+	details.FirstConcert, details.LastConcert, _ = getFirstLastDate(dates)
+
+	if err := tmpl.Execute(w, details); err != nil {
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+		return
+	}
+}
+
+func mainPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		if r.URL.Query().Get("id") == "" {
+			generateMainPage(w)
+		} else {
+			id := r.URL.Query().Get("id")
+			generateDetailsPage(w, id)
+		}
+	} else {
+		http.Error(w, "URL not found", http.StatusNotFound)
+		log.Println("URL not found:", r.URL.Path)
+		return
+	}
 }
 
 func main() {
 	http.Handle("/static/", http.FileServer(http.Dir(".")))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" && r.URL.Query().Get("id") == "" {
-			groups, err := FetchGroups()
-			if err != nil {
-				http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
-				log.Println("Error fetching data from API:", err)
-				return
-			}
-
-			tmpl, err := template.ParseFiles("templates/index.html")
-
-			if err != nil {
-				http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
-				log.Println("Error parsing template:", err)
-				return
-			}
-			tmpl.Execute(w, groups)
-		} else if r.URL.Query().Get("id") != "" {
-			idStr := r.URL.Query().Get("id")
-			id, err := strconv.Atoi(idStr)
-			if err != nil {
-				http.Error(w, "Invalid ID", http.StatusBadRequest)
-				return
-			}
-
-			group, err := fetchGroup(id)
-			if err != nil {
-				http.Error(w, "Error fetching group data", http.StatusInternalServerError)
-				return
-			}
-
-			relation, err := fetchRelation(id)
-			if err != nil {
-				http.Error(w, "Error fetching relation data", http.StatusInternalServerError)
-				return
-			}
-
-			// Render the template
-			tmpl, err := template.ParseFiles("templates/details.html")
-			if err != nil {
-				http.Error(w, "Error loading template", http.StatusInternalServerError)
-				return
-			}
-			data := struct {
-				Artist   Group
-				Relation Relation
-			}{
-				Artist:   group,
-				Relation: relation,
-			}
-			if err := tmpl.Execute(w, data); err != nil {
-				http.Error(w, "Error rendering template", http.StatusInternalServerError)
-				return
-			}
-
-		} else {
-			if r.URL.Path != "/" {
-				http.Error(w, "URL not found", http.StatusNotFound)
-				log.Println("URL not found:", r.URL.Path)
-				return
-			}
-		}
-	})
-
+	http.HandleFunc("/", mainPageHandler)
 	log.Println("Server is running on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
