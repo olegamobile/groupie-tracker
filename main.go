@@ -205,7 +205,7 @@ func getFirstLastDate(dates []string) (string, string, error) {
 func generateMainPage(w http.ResponseWriter) {
 	groups, err := FetchGroups()
 	if err != nil {
-		http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
 		log.Println("Error fetching data from API:", err)
 		return
 	}
@@ -213,7 +213,7 @@ func generateMainPage(w http.ResponseWriter) {
 	tmpl, err := template.ParseFiles("templates/index.html")
 
 	if err != nil {
-		http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
 		log.Println("Error parsing template:", err)
 		return
 	}
@@ -223,25 +223,29 @@ func generateMainPage(w http.ResponseWriter) {
 func generateDetailsPage(w http.ResponseWriter, id string) {
 	group, err := FetchGroup(id)
 	if err != nil {
-		http.Error(w, "Error fetching group data", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
+		log.Println("Error fetching group data:", err)
 		return
 	}
 
 	relation, err := fetchRelation(id)
 	if err != nil {
-		http.Error(w, "Error fetching relation data", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
+		log.Println("Error fetching relations data:", err)
 		return
 	}
 
 	countriesList, err := fetchLocations(id)
 	if err != nil {
-		http.Error(w, "Error fetching locations data", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
+		log.Println("Error fetching locations data:", err)
 		return
 	}
 
 	tmpl, err := template.ParseFiles("templates/details.html")
 	if err != nil {
-		http.Error(w, "Error loading template", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
+		log.Println("Error parsing template:", err)
 		return
 	}
 
@@ -253,7 +257,8 @@ func generateDetailsPage(w http.ResponseWriter, id string) {
 	details.FirstConcert, details.LastConcert, _ = getFirstLastDate(dates)
 
 	if err := tmpl.Execute(w, details); err != nil {
-		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+		errorHandler(w, http.StatusInternalServerError)
+		log.Println("Error executing template:", err)
 		return
 	}
 }
@@ -267,13 +272,24 @@ func mainPageHandler(w http.ResponseWriter, r *http.Request) {
 			generateDetailsPage(w, id)
 		}
 	} else {
-		http.Error(w, "URL not found", http.StatusNotFound)
+		errorHandler(w, http.StatusNotFound)
 		log.Println("URL not found:", r.URL.Path)
 		return
 	}
 }
 
+func errorHandler(w http.ResponseWriter, err int) {
+	tmpl, errr := template.ParseFiles("templates/error.html")
+	if errr != nil {
+		http.Error(w, "Error loading template", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(err)
+	tmpl.ExecuteTemplate(w, "error.html", http.StatusText(err))
+}
+
 func main() {
+	fmt.Printf("http.StatusMethodNotAllowed: %v\n", http.StatusMethodNotAllowed)
 	http.Handle("/static/", http.FileServer(http.Dir(".")))
 	http.HandleFunc("/", mainPageHandler)
 	log.Println("Server is running on http://localhost:8080")
